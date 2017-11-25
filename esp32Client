@@ -1,0 +1,187 @@
+// early dev of a basic esp server that is part of a group, such as a security camera
+#include <FS.h>                   //this needs to be first, or it all crashes and burns...
+#include "SPIFFS.h"
+#include <WiFi.h>          //https://github.com/esp8266/Arduino
+#include <WebServer.h>
+#include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
+
+#define WIFI1 "SAM1" // look here first, its a different AP than ours something like a cell based wifi (passwords added soon)
+#define WIFI2 "SAMIAM" // working access point
+
+#define MQTT_SERVER "SAMMQTT"
+#define MQTT_PORT "1883"
+char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
+
+// keep for reference
+void setupData(){
+    //clean FS, for testing
+  //SPIFFS.format();
+  
+  //read configuration from FS json
+  Serial.println("mounting FS...");
+
+  if (SPIFFS.begin()) {
+    Serial.print("mounted file system total bytes: ");
+    Serial.print(SPIFFS.totalBytes());
+    Serial.print(" used bytes: ");
+    Serial.println(SPIFFS.usedBytes());
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject& json = jsonBuffer.parseObject(buf.get());
+        json.printTo(Serial);
+        if (json.success()) {
+          Serial.println("\nparsed json");
+
+          //not properly allocated here for example strcpy(mqtt_server, json["mqtt_server"]);
+          //strcpy(mqtt_port, json["mqtt_port"]);
+          //strcpy(blynk_token, json["blynk_token"]);
+
+          if(json["ip"]) {
+            Serial.println("setting custom ip from config");
+            //static_ip = json["ip"];
+            //not properly allocated here for example strcpy(static_ip, json["ip"]);
+            //not properly allocated here for example strcpy(static_gw, json["gateway"]);
+            //not properly allocated here for example strcpy(static_sn, json["subnet"]);
+            //strcat(static_ip, json["ip"]);
+            //static_gw = json["gateway"];
+            //static_sn = json["subnet"];
+            //Serial.println(static_ip);
+/*            Serial.println("converting ip");
+            IPAddress ip = ipFromCharArray(static_ip);
+            Serial.println(ip);*/
+          } 
+          else {
+            Serial.println("no custom ip in config");
+          }
+        } 
+        else {
+          Serial.println("failed to load json config");
+        }
+      }
+      else {
+        Serial.println("no config file");
+      }
+    }
+  } 
+  else {
+    Serial.println("failed to mount FS");
+  }
+}
+
+uint8_t waitForResult(int connectTimeout) {
+  if (connectTimeout == 0) {
+    return WiFi.waitForConnectResult();
+  } 
+  else {
+    Serial.print(F("Waiting for connection result with time out of "));
+    Serial.println(connectTimeout);
+    unsigned long start = millis();
+    boolean keepConnecting = true;
+    uint8_t status;
+    while (keepConnecting) {
+      status = WiFi.status();
+      if (millis() > start + connectTimeout) {
+        keepConnecting = false;
+        Serial.println(F("Connection timed out"));
+      }
+      if (status == WL_CONNECTED || status == WL_CONNECT_FAILED) {
+        keepConnecting = false;
+      }
+      delay(100);
+    }
+    return status;
+  }
+}
+
+int connectWifi(char* ssid, char* pass, int connectTimeout) {
+  Serial.print(F("Connecting as wifi client..."));
+  Serial.print(F(" ssid "));
+  Serial.print(ssid);
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Already connected. Bailing out.");
+    return WL_CONNECTED;
+  }
+  //check if we have ssid and pass and force those, if not, try with last saved values
+  if (ssid != NULL) {
+    if (pass != NULL){
+      WiFi.begin(ssid, pass);
+    }
+    else {
+      WiFi.begin(ssid);
+    }
+  } 
+  else {
+    if (WiFi.SSID()) {
+      Serial.println("Using WiFi.SSID");
+      WiFi.begin();
+    } 
+    else {
+      Serial.println("No saved credentials and no parameters passed in");
+    }
+  }
+
+  return waitForResult(connectTimeout);
+}
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  Serial.println();
+
+  WiFi.mode(WIFI_AP_STA); // any ESP can be an AP if main AP is not found.
+
+  if (connectWifi(WIFI1, NULL, 500) != WL_CONNECTED){
+    if (connectWifi(WIFI2, NULL, 5000)!= WL_CONNECTED){
+      Serial.println("No connections made. Be the access point");
+      WiFi.softAP(WIFI2);
+      Serial.print("AP IP address: ");
+      Serial.println(WiFi.softAPIP());
+    }
+    else {
+      Serial.print("Connected IP address: ");
+    }
+  }
+}
+
+  //save the custom parameters to FS save json as example
+  /* example
+  if (shouldSaveConfig) {
+    Serial.println("saving config");
+    DynamicJsonBuffer jsonBuffer;
+    JsonObject& json = jsonBuffer.createObject();
+    json["mqtt_server"] = mqtt_server;
+    json["mqtt_port"] = mqtt_port;
+    json["blynk_token"] = blynk_token;
+
+    json["ip"] = WiFi.localIP().toString();
+    json["gateway"] = WiFi.gatewayIP().toString();
+    json["subnet"] = WiFi.subnetMask().toString();
+
+    File configFile = SPIFFS.open("/config.json", "w");
+    if (!configFile) {
+      Serial.println("failed to open config file for writing");
+    }
+
+    json.prettyPrintTo(Serial);
+    json.printTo(configFile);
+    configFile.close();
+    //end save
+  }
+  */
+
+
+void loop() {
+  // put your main code here, to run repeatedly:
+
+
+}
