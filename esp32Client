@@ -15,7 +15,6 @@ void safestr(char *s1, const char *s2, int len) {
   if (s1 && s2 && len > 0){
     strncpy(s1, s2, len);
     s1[len-1] = '\0';
-    Serial.printf("s1 is %s\n", s1);
   }
 }
 
@@ -30,6 +29,7 @@ public:
       password1[0] = '\0';
       password2[0] = '\0';
       other[0] = '\0';
+      priority = 1;
   }
   char wifi1[16]; // check here first
   char wifi2[16];
@@ -37,7 +37,7 @@ public:
   char password2[MAX_PWD_LEN];
   char other[16];
   uint64_t chipid;  // read at setup time
-  
+  uint32_t priority;
   void set();
   void get();
   void setDefault();
@@ -72,6 +72,7 @@ void Conf::set(){
       json["pwd1"] = password1;
       json["pwd2"] = password2;
       json["other"] = other;
+      json["priority"] = priority;
       Serial.println("config.json contents");
       json.prettyPrintTo(Serial);
       json.printTo(configFile);
@@ -103,6 +104,7 @@ void Conf::get(){
         safestr(password1, json["password1"], sizeof(password1));
         safestr(password2, json["password2"], sizeof(password2));
         safestr(other, json["other"], sizeof(other));
+        priority = atoi(json["priority"]);
       } 
       else {
         Serial.println("failed to load json config");
@@ -181,7 +183,6 @@ void setup() {
 
   Serial.println("mounting FS...");
   
-  
   if (SPIFFS.begin()) { // often used
     //clean FS, for testing
     //Serial.println("SPIFFS remove ...");
@@ -194,7 +195,12 @@ void setup() {
     conf.setDefault(); // something really wrong but keep trying
     conf.set();
   }
-  
+
+  // stagger the starts to make sure the highest priority is most likely to become AP etc
+  randomSeed((uint32_t)conf.chipid);
+  int randNumber = random(300);
+  Serial.printf("delay %d, priority %d, seed %d\n", randNumber, conf.priority, (uint32_t)conf.chipid);
+  delay(randNumber*conf.priority);
  
   WiFi.mode(WIFI_AP_STA); // any ESP can be an AP if main AP is not found.
 
@@ -216,5 +222,5 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
 
-
+ Serial.println("noise");
 }
