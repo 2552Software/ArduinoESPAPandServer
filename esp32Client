@@ -1,5 +1,5 @@
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
-#include "SPIFFS.h"
+#include <SPIFFS.h>
 #include <WiFi.h>          //https://github.com/esp8266/Arduino
 #include <WebServer.h>
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
@@ -7,76 +7,115 @@
 #define WIFI1 "SAM1" // look here first, its a different AP than ours something like a cell based wifi (passwords added soon)
 #define WIFI2 "SAMIAM" // working access point
 #define MAX_PWD_LEN 16
-char password[MAX_PWD_LEN]="";
 #define MQTT_SERVER "SAMMQTT"
 #define MQTT_PORT "1883"
+#define CONFIG_FILE "/config.json"
+void safestr(char *s1, const char *s2, int len) {
+  if (s2){
+    strncpy(s1, s2, len);
+    s1[len-1] = '\0';
+    Serial.print("s1 is ");
+    Serial.println(s1);
+  }
+}
+
 char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
 
-// todo set pwd and wifi1 and wifi2 via web ui -- phase II
-void setPassword(string pwd){
+class Conf {
+public:
+  char wifi1[16]; // check here first
+  char wifi2[16];
+  char password1[MAX_PWD_LEN];
+  char password2[MAX_PWD_LEN];
+  char other[16];
+  
+  void set();
+  void get();
+  void setDefault();
+  void echo();
+} conf;
+
+void Conf::echo(){
+  Serial.print(F("wifi1: "));
+  Serial.println(wifi1);
+  Serial.print(F("wifi2: "));
+  Serial.println(wifi2);
+  Serial.print(F("password1: "));
+  Serial.println(password1);
+  Serial.print(F("password2: "));
+  Serial.println(password2);
+  Serial.print(F("other: "));
+  Serial.println(other);
+}
+
+
+void Conf::setDefault(){
+  Serial.println("set defaults");
+  safestr(wifi1, WIFI1, sizeof(wifi1));
+  safestr(wifi2, WIFI2, sizeof(wifi2));
+  safestr(password1, "", sizeof(password1));
+  safestr(password2, "", sizeof(password2)); // future phases can sync pwds or such
+  safestr(other, "", sizeof(other));
+  echo();
+}
+void Conf::set(){
     DynamicJsonBuffer jsonBuffer;
     JsonObject& json = jsonBuffer.createObject();
-    json["pwd"] = pwd;
-    File configFile = SPIFFS.open("/config.json", "w");
+    File configFile = SPIFFS.open(CONFIG_FILE, "w");
     if (!configFile) {
       Serial.println("failed to open config file for writing");
     }
     else {
+      json["wifi1"] = wifi1;
+      json["wifi2"] = wifi2;
+      json["pwd1"] = password1;
+      json["pwd2"] = password2;
+      json["other"] = other;
+      Serial.println("config.json contents");
       json.prettyPrintTo(Serial);
       json.printTo(configFile);
       configFile.close();
     }
 }
+
 // keep for reference
-void readConfigFile(){
-    //clean FS, for testing
-  //SPIFFS.format();
-  
+void Conf::get(){
   //read configuration from FS json
-  Serial.println("mounting FS...");
+  if (SPIFFS.exists("/config.json")) {
+    //file exists, reading and loading
+    Serial.println("reading config file");
+    File configFile = SPIFFS.open(CONFIG_FILE, "r");
+    if (configFile) {
+      Serial.println("opened config file");
+      size_t size = configFile.size();
+      // Allocate a buffer to store contents of the file.
+      std::unique_ptr<char[]> buf(new char[size]);
 
-  if (SPIFFS.begin()) {
-    Serial.print("mounted file system total bytes: ");
-    Serial.print(SPIFFS.totalBytes());
-    Serial.print(" used bytes: ");
-    Serial.println(SPIFFS.usedBytes());
-    if (SPIFFS.exists("/config.json")) {
-      //file exists, reading and loading
-      Serial.println("reading config file");
-      File configFile = SPIFFS.open("/config.json", "r");
-      if (configFile) {
-        Serial.println("opened config file");
-        size_t size = configFile.size();
-        // Allocate a buffer to store contents of the file.
-        std::unique_ptr<char[]> buf(new char[size]);
-
-        configFile.readBytes(buf.get(), size);
-        DynamicJsonBuffer jsonBuffer;
-        JsonObject& json = jsonBuffer.parseObject(buf.get());
-        json.printTo(Serial);
-        if (json.success()) {
-          Serial.println("\nparsed json");
-          if(json["pwd"]) {
-            Serial.println("setting from config file");
-            memset(password, 0, MAX_PWD_LEN);
-            strncpy(password, json["pwd"], MAX_PWD_LEN);
-          } 
-          else {
-            Serial.println("no pwd in config");
-          }
-        } 
-        else {
-          Serial.println("failed to load json config");
-        }
-      }
+      configFile.readBytes(buf.get(), size);
+      DynamicJsonBuffer jsonBuffer(JSON_OBJECT_SIZE(1) + MAX_PWD_LEN);
+      JsonObject& json = jsonBuffer.parseObject(buf.get());
+      json.printTo(Serial);
+      if (json.success()) {
+        Serial.println("\nparsed json A OK");
+        safestr(wifi1, json["wifi1"], sizeof(wifi1));
+        safestr(wifi2, json["wifi2"], sizeof(wifi2));
+        safestr(password1, json["password1"], sizeof(password1));
+        safestr(password2, json["password2"], sizeof(password2));
+        safestr(other, json["other"], sizeof(other));
+      } 
       else {
-        Serial.println("no config file");
+        Serial.println("failed to load json config");
       }
     }
-  } 
-  else {
-    Serial.println("failed to mount FS");
+    else {
+      Serial.println("internal error");
+    }
   }
+  else {
+    Serial.println("no config file, set defaults");
+    conf.setDefault();
+  }
+   echo();
 }
 
 uint8_t waitForResult(int connectTimeout) {
@@ -134,22 +173,42 @@ int connectWifi(const char* ssid, const char* pass, int connectTimeout) {
 
   return waitForResult(connectTimeout);
 }
+
+
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
   Serial.println();
 
-  // commented out -- but set this each time a new pwd and then re-run this code
-  // setPassword("newone"); 
+  Serial.println("mounting FS...");
   
-  readConfigFile();
+  
+  if (SPIFFS.begin()) { // often used
+    //clean FS, for testing
+    Serial.println("SPIFFS remove ...");
+    SPIFFS.remove(CONFIG_FILE);
+    //while(1);
+    Serial.print("mounted file system total bytes: ");
+    Serial.print(SPIFFS.totalBytes());
+    Serial.print(" used bytes: ");
+    Serial.println(SPIFFS.usedBytes());
+    conf.get();
+  }
+  else {
+    Serial.print("no SPIFFS");
+    conf.setDefault(); // something really wrong but keep trying
+    conf.set();
+  }
+  
+ 
   WiFi.mode(WIFI_AP_STA); // any ESP can be an AP if main AP is not found.
 
   // todo allow two passwords? or a web site to set a new pwd then reboot?
-  if (connectWifi(WIFI1, password, 500) != WL_CONNECTED){
-    if (connectWifi(WIFI2, password, 5000)!= WL_CONNECTED){
+  if (connectWifi(conf.wifi1, conf.password1, 500) != WL_CONNECTED){
+    if (connectWifi(conf.wifi2, conf.password2, 5000)!= WL_CONNECTED){
       Serial.println("No connections made. Be the access point");
-      WiFi.softAP(WIFI2);
+      WiFi.softAP(conf.wifi2, conf.password2);
       Serial.print("AP IP address: ");
       Serial.println(WiFi.softAPIP());
     }
@@ -158,32 +217,6 @@ void setup() {
     }
   }
 }
-
-  //save the custom parameters to FS save json as example
-  /* example
-  if (shouldSaveConfig) {
-    Serial.println("saving config");
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& json = jsonBuffer.createObject();
-    json["mqtt_server"] = mqtt_server;
-    json["mqtt_port"] = mqtt_port;
-    json["blynk_token"] = blynk_token;
-
-    json["ip"] = WiFi.localIP().toString();
-    json["gateway"] = WiFi.gatewayIP().toString();
-    json["subnet"] = WiFi.subnetMask().toString();
-
-    File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile) {
-      Serial.println("failed to open config file for writing");
-    }
-
-    json.prettyPrintTo(Serial);
-    json.printTo(configFile);
-    configFile.close();
-    //end save
-  }
-  */
 
 
 void loop() {
