@@ -11,7 +11,7 @@
 #define MQTT_PORT "1883"
 #define CONFIG_FILE "/config.json"
 void safestr(char *s1, const char *s2, int len) {
-  if (s2){
+ if (s1 && s2){
     strncpy(s1, s2, len);
     s1[len-1] = '\0';
     Serial.print("s1 is ");
