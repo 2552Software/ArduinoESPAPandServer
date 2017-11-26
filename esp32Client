@@ -10,12 +10,12 @@
 #define MQTT_SERVER "SAMMQTT"
 #define MQTT_PORT "1883"
 #define CONFIG_FILE "/config.json"
+
 void safestr(char *s1, const char *s2, int len) {
- if (s1 && s2){
+  if (s1 && s2 && len > 0){
     strncpy(s1, s2, len);
     s1[len-1] = '\0';
-    Serial.print("s1 is ");
-    Serial.println(s1);
+    Serial.printf("s1 is %s\n", s1);
   }
 }
 
@@ -23,11 +23,20 @@ char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
 
 class Conf {
 public:
+  Conf() {
+      chipid = ESP.getEfuseMac();//The chip ID is essentially its MAC address(length: 6 bytes).
+      wifi1[0] = '\0';
+      wifi2[0] = '\0';
+      password1[0] = '\0';
+      password2[0] = '\0';
+      other[0] = '\0';
+  }
   char wifi1[16]; // check here first
   char wifi2[16];
   char password1[MAX_PWD_LEN];
   char password2[MAX_PWD_LEN];
   char other[16];
+  uint64_t chipid;  // read at setup time
   
   void set();
   void get();
@@ -36,18 +45,10 @@ public:
 } conf;
 
 void Conf::echo(){
-  Serial.print(F("wifi1: "));
-  Serial.println(wifi1);
-  Serial.print(F("wifi2: "));
-  Serial.println(wifi2);
-  Serial.print(F("password1: "));
-  Serial.println(password1);
-  Serial.print(F("password2: "));
-  Serial.println(password2);
-  Serial.print(F("other: "));
-  Serial.println(other);
+  Serial.printf("ESP32 Chip ID = %04X",(uint16_t)(chipid>>32));//print High 2 bytes
+  Serial.printf("%08X\n",(uint32_t)chipid);//print Low 4bytes.
+  Serial.printf("wifi1: %s wifi2: %s password1: %s password2: %s other: %s\n", wifi1, wifi2, password1, password2, other);
 }
-
 
 void Conf::setDefault(){
   Serial.println("set defaults");
@@ -144,9 +145,8 @@ uint8_t waitForResult(int connectTimeout) {
 }
 
 int connectWifi(const char* ssid, const char* pass, int connectTimeout) {
-  Serial.print(F("Connecting as wifi client..."));
-  Serial.print(F(" ssid "));
-  Serial.print(ssid);
+  
+  Serial.printf("Connecting...: ssid %s\n", ssid);
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("Already connected. Bailing out.");
@@ -174,8 +174,6 @@ int connectWifi(const char* ssid, const char* pass, int connectTimeout) {
   return waitForResult(connectTimeout);
 }
 
-
-
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -186,13 +184,9 @@ void setup() {
   
   if (SPIFFS.begin()) { // often used
     //clean FS, for testing
-    Serial.println("SPIFFS remove ...");
-    SPIFFS.remove(CONFIG_FILE);
-    //while(1);
-    Serial.print("mounted file system total bytes: ");
-    Serial.print(SPIFFS.totalBytes());
-    Serial.print(" used bytes: ");
-    Serial.println(SPIFFS.usedBytes());
+    //Serial.println("SPIFFS remove ...");
+    //SPIFFS.remove(CONFIG_FILE);
+    Serial.printf("mounted file system bytes: %X/%X\n", SPIFFS.usedBytes(), SPIFFS.totalBytes());
     conf.get();
   }
   else {
