@@ -31,7 +31,7 @@ portR.on('open', () => {
 });
 
 var bytes = 0;
-
+// go to BSON, 2 packets, one is meta data and the other data?
 portR.on('data', (data) => {
 	/* get a buffer of data from the serial port */
 	bytes += data.length;
