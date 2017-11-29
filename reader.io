@@ -16,10 +16,11 @@ wstream.on('error', function (err) {
 
 wstream.on('open', function(fd) {
     console.log('open');
+
 portR.on('data', (data) => {
 console.log(toType(data));
-var buf = Buffer.from(data);
-wstream.write(buf);
+var buf = Buffer.from(data.buffer);
+wstream.write(data);
 	/* get a buffer of data from the serial port */
 	bytes += data.length;
 	console.log(bytes + ' hot dog!' + data.length);
@@ -29,11 +30,11 @@ wstream.write(buf);
 	// assume EOF at end of buffer and SOF at start is reliable enough for now, read about link for more info on how to tighten this up
 	if (data.length > 2 && data[data.length-1] == 0xD9 && data[data.length-2] == 0xFF){
 		console.log('eof');
+		wstream.end();
 	}
 	// 0xFF, 0xD8 start of image
 	if (data.length > 2 && data[0] == 0xFF && data[1] == 0xD8){
 		console.log('sof'); // start of file, once found no commands until eof found
-		wstream.end();
 	}
 });
 
@@ -63,12 +64,7 @@ var portR = new SerialPort('COM6', defaultOptions, function (err) {
 
 portR.on('open', () => {
 	console.log('PortR Opened');
-	portR.flush();
 });
-
-
-
-
 
 
 wstream.on('finish', function () {
