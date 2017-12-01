@@ -1,0 +1,3 @@
+forever-serice install sender --script sender.js
+forever-service install mqttserver --script mqttserver.js
+// put redis in cron, follow redis setup, as well as node, mosca, forever-service
