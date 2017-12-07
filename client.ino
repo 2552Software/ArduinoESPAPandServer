@@ -510,19 +510,14 @@ void setup(){
 
 void loop(){
   connect(); // quick check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
-  char name[14];
-   time_t t = now(); // Store the current time in time 
-  if (k > 1024*1024){
-    k = 1; // ok to start over?
-  }
-  sprintf(name,"/%08d.jpg",k);
+  char name[17];
+  snprintf(name, 16, "%lu.jpg", now()); // unique number that means a ton
   captureAndSend(name);
   digitalWrite(CAM_POWER_ON, LOW);//camera power off
   if (conf.sleepTimeS) {
     ESP.deepSleep(conf.sleepTimeS * 1000000);//ESP32 sleep 10s by default
   }
 }
-
 
 
 
