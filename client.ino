@@ -1,5 +1,9 @@
 //https://arduinojson.org/faq/esp32/
 
+/* core camera, uses MQTT to send data in small chuncks.  
+ *  need to figure license and copy right etc yet
+ */
+
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
@@ -10,6 +14,7 @@
 #include <PubSubClient.h>
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #include <SPIFFS.h>
+#include <TimeLib.h>
 
 #include "memorysaver.h"
 
@@ -17,6 +22,8 @@
 #error Please select the some sort of ESP32 board in the Tools/Board
 #endif
 
+// we always check for two wifi so there can be something like an cell. access point we want to use. Once the system is running we do not re-check. We could some day, maybe a MQTT
+// message would tell us to change to new AP. Maybe this is all too complex
 #define WIFI1 "SAM-Home" // look here first, its a different AP than ours something like a cell based wifi (passwords added soon)
 #define WIFI1PWD ""
 #define WIFI2 "SAMIAM" // working access point
@@ -39,12 +46,13 @@ static int k = 0;
 uint8_t temp = 0, temp_last = 0;
 uint32_t length = 0;
 bool is_header = false;
+bool isSoftAP = false;
 
 char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
 
 
 // ip types vary by api expecations
-char* ipServer = "192.168.88.10";// for now assume this, 2-9 reserved, 10-100 is a server, 101-250 are devices, 251+ reserved
+const char* ipServer = "192.168.88.10";// for now assume this, 2-9 reserved, 10-100 is a server, 101-250 are devices, 251+ reserved
 IPAddress ipMe(192,168,88,101);// for now assume this, 2-9 reserved, 10-100 is a server, 101-250 are devices, 251+ reserved
 IPAddress ipSubnet(255,255,255,0);
 WiFiClient espClient;
@@ -133,7 +141,7 @@ void Conf::set(){
       json["pwd2"] = password2;
       json["other"] = other;
       json["priority"] = priority;
-      json["sleepTimeSity"] = sleepTimeS;
+      json["sleepTimeS"] = sleepTimeS;
       Log.notice("config.json contents");
       echo();
       json.prettyPrintTo(Serial);
@@ -164,7 +172,7 @@ void Conf::get(){
         safestr(password2, json["password2"], sizeof(password2));
         safestr(other, json["other"], sizeof(other));
         priority = atoi(json["priority"]);
-        sleepTimeS = json["sleepTimeSity"];
+        sleepTimeS = json["sleepTimes"];
         echo();
       } 
       else {
@@ -181,14 +189,13 @@ void Conf::get(){
   }
 
   echo();
-
 }
 
 // get from the camera
 void capture(){
   int total_time = 0;
 
-  Log.notice(F("start capture"));
+  Log.trace(F("start capture"));
   myCAM.flush_fifo(); // added this
   myCAM.clear_fifo_flag();
   myCAM.start_capture();
@@ -197,8 +204,7 @@ void capture(){
   while (!myCAM.get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK));
   total_time = millis() - total_time;
 
-  Log.notice(F("capture total_time used (in miliseconds): %D"), total_time);
-
+  Log.trace(F("capture total_time used (in miliseconds): %D"), total_time);
  }
 
 //send via mqtt, mqtt server will turn to B&W and see if there are changes ie motion, of so it will send it on
@@ -230,6 +236,7 @@ void captureAndSend(const char * path){
   myCAM.CS_LOW();
   myCAM.set_fifo_burst();
   while ( length-- )  {
+    connect(); // is this too much?
     temp_last = temp;
     temp =  SPI.transfer(0x00);
     //Read JPEG data from FIFO until EOF, send send the image
@@ -295,46 +302,116 @@ void send(const char*topic, JsonObject& JSONencoder){
     Log.error("sending message to mqtt");
   }
 }
+// timeout connection attempt
+uint8_t waitForResult(int connectTimeout) {
+  if (connectTimeout == 0) {
+    Log.trace(F("Waiting for connection result without timeout"));
+    return WiFi.waitForConnectResult();
+  } 
+  else {
+    Log.trace(F("Waiting for connection result with time out of %d"), connectTimeout);
+    unsigned long start = millis();
+    boolean keepConnecting = true;
+    uint8_t status;
+    while (keepConnecting) {
+      status = WiFi.status();
+      if (millis() > start + connectTimeout) {
+        keepConnecting = false;
+        Log.trace(F("Connection timed out"));
+      }
+      if (status == WL_CONNECTED || status == WL_CONNECT_FAILED) {
+        keepConnecting = false;
+      }
+      delay(100);
+    }
 
-void setup(){
-  uint8_t vid, pid;
-  uint8_t temp;
-  static int i = 0;
-  Serial.begin(115200);
+    return status;
 
-  Log.begin(logLevel, &Serial);
-  Log.notice(F("ArduCAM Start!"));
-  
+  }
+
+}
+int connectWifi(const char* ssid, const char* pass, int connectTimeout) {
+  Log.trace("Connecting...: ssid %s", ssid);
+  if (WiFi.status() == WL_CONNECTED) {
+    Log.trace("Already connected. Bailing out.");
+    return WL_CONNECTED;
+  }
+
+  //check if we have ssid and pass and force those, if not, try with last saved values
+  if (ssid != NULL) {
+    if (pass != NULL){
+      WiFi.begin(ssid, pass);
+    }
+    else {
+      WiFi.begin(ssid);
+    }
+  } 
+  else {
+    if (WiFi.SSID()) {
+      Log.notice("Using WiFi.SSID %s", WiFi.SSID());
+      WiFi.begin();
+    } 
+    else {
+     Log.error("No saved credentials and no parameters passed in");
+    }
+  }
+  return waitForResult(connectTimeout);
+}
+
+// allow for reconnect
+void connect(){
+  if (WiFi.status() != WL_CONNECTED && !isSoftAP) { 
+    Log.notice("Connect to WiFi..");
+    // todo allow two passwords? or a web site to set a new pwd then reboot?
+    if (connectWifi(conf.wifi1, conf.password1, 500) != WL_CONNECTED){
+      if (connectWifi(conf.wifi2, conf.password2, 5000)!= WL_CONNECTED){
+        Log.trace("No connections made. Be the access point");
+        WiFi.softAP(conf.wifi2, conf.password2);
+        Log.trace("AP IP address: %s", WiFi.softAPIP().toString());
+        isSoftAP = true;
+      }
+    }
+  }
+
+  while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
+    Log.trace("Connecting to MQTT...");
+     if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
+      Log.notice("connected to %s", ipServer);
+     } else {
+      Log.error(F("failed with state %D will retry every 2 seconds server %s"), mqttClient.state(), ipServer);
+      delay(2000);
+     }
+  }
+
+}
+// basic setup
+void mountSystem(){
+  Log.notice(F("mounting FS and the works..."));
+  if (SPIFFS.begin()) { // often used
+    //clean FS, for testing
+    //Serial.println("SPIFFS remove ...");
+    //SPIFFS.remove(CONFIG_FILE);
+    Log.notice(F("mounted file system bytes: %X/%X\n"), SPIFFS.usedBytes(), SPIFFS.totalBytes());
+    conf.get();
+  }
+  else {
+     Log.notice("no SPIFFS");
+     conf.setDefault(); // something really wrong but keep trying
+     conf.set();
+  }
+  // stagger the starts to make sure the highest priority is most likely to become AP etc
+  randomSeed((uint32_t)conf.chipid);
+  int randNumber = random(300);
+  Log.notice("delay %d, priority %d, seed %d\n", randNumber, conf.priority, (uint32_t)conf.chipid);
+  delay(randNumber*conf.priority);
   //set the CS as an output:
   pinMode(CS,OUTPUT);
   pinMode(CAM_POWER_ON , OUTPUT);
   digitalWrite(CAM_POWER_ON, HIGH);
   
   // make sure we can connect
+  WiFi.mode(WIFI_AP_STA); // any ESP can be an AP if main AP is not found.
   WiFi.config(ipMe, ipMe, ipSubnet); // each device gets is own ip so we can double check things etc
-  WiFi.begin(ssid, password); // add in the save code todo bugbug
- 
-  while (WiFi.status() != WL_CONNECTED) { // bugbug todo add code to test for different wifi
-    delay(500);
-    Log.trace("Connecting to WiFi..");
-  }
-  Log.trace("Connected to the WiFi network"); 
-  while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
-    Log.trace("Connecting to MQTT...");
-     if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
-      Log.trace("connected");
-     } else {
-      Log.error(F("failed with state %D will retry every 2 seconds"), mqttClient.state());
-      delay(2000);
-     }
-  }
-
-  // send many signs on help with debugging etc
-  StaticJsonBuffer<MQTT_MAX_PACKET_SIZE> JSONbuffer;
-  JsonObject& JSONencoder = JSONbuffer.createObject();
-  JSONencoder["cmd"] = "signon";
-  JSONencoder["wifi"] = ssid;
-
   Wire.begin();
   //initialize SPI:
   SPI.begin();
@@ -347,10 +424,23 @@ void setup(){
       delay(2);
       continue;
     }
-    else
+    else {
       break;
-    } 
-   
+    }
+  } 
+}
+
+void setupCamera(){
+  uint8_t vid, pid;
+  uint8_t temp;
+  static int i = 0;
+
+    // send many signs on help with debugging etc
+  StaticJsonBuffer<MQTT_MAX_PACKET_SIZE> JSONbuffer;
+  JsonObject& JSONencoder = JSONbuffer.createObject();
+  JSONencoder["cmd"] = "signon";
+  JSONencoder["wifi"] = ssid;
+
 #if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
   //Check if the camera module type is OV2640
   myCAM.wrSensorReg8_8(0xff, 0x01);
@@ -371,7 +461,7 @@ void setup(){
     JSONencoder["error"] = "Can't find OV5640 module!";
   }
   else {
-    Log.trace(F("OV5640 detected."));
+    Log.notice(F("OV5640 detected."));
   }
 #elif defined (OV5642_MINI_5MP_PLUS) || defined (OV5642_MINI_5MP) || (defined (OV5642_CAM))
  //Check if the camera module type is OV5642
@@ -382,7 +472,7 @@ void setup(){
        JSONencoder["error"] = "Can't find OV5642 module!";
    }
    else {
-    Log.trace(F("OV5642 detected."));
+    Log.notice(F("OV5642 detected."));
    }
 #endif
  
@@ -405,15 +495,32 @@ void setup(){
 
   send("msg", JSONencoder);
   delay(1000);
+
 }
+
+void setup(){
+  Serial.begin(115200);
+
+  Log.begin(logLevel, &Serial);
+  Log.notice(F("ArduCAM Start!"));
+
+  mountSystem();
+  setupCamera();
+}
+
 void loop(){
-  char name[11];
- sprintf(name,"/%05d.jpg",k);
- captureAndSend(name);
- digitalWrite(CAM_POWER_ON, LOW);//camera power off
- if (conf.sleepTimeS) {
-   ESP.deepSleep(conf.sleepTimeS * 1000000);//ESP32 sleep 10s by default
- }
+  connect(); // quick check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
+  char name[14];
+   time_t t = now(); // Store the current time in time 
+  if (k > 1024*1024){
+    k = 1; // ok to start over?
+  }
+  sprintf(name,"/%08d.jpg",k);
+  captureAndSend(name);
+  digitalWrite(CAM_POWER_ON, LOW);//camera power off
+  if (conf.sleepTimeS) {
+    ESP.deepSleep(conf.sleepTimeS * 1000000);//ESP32 sleep 10s by default
+  }
 }
 
 
