@@ -298,6 +298,7 @@ void send(const char*topic, JsonObject& JSONencoder){
   JSONencoder["mqtt"] =  ipServer;
   Log.trace(F("ending message to MQTT, topic is %s ;"), topic);
   Log.trace(JSONmessageBuffer);
+  connect(); // quick connect check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
   if (mqttClient.publish(topic, JSONmessageBuffer) != true) {
     Log.error("sending message to mqtt");
   }
@@ -509,7 +510,6 @@ void setup(){
 }
 
 void loop(){
-  connect(); // quick check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
   char name[17];
   snprintf(name, 16, "%lu.jpg", now()); // unique number that means a ton
   captureAndSend(name);
@@ -518,6 +518,7 @@ void loop(){
     ESP.deepSleep(conf.sleepTimeS * 1000000);//ESP32 sleep 10s by default
   }
 }
+
 
 
 
