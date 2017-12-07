@@ -257,15 +257,16 @@ void captureAndSend(const char * path){
         is_header = false;
         i = 0;
     }  
+    // not sure about this one yet
+    #define MQTT_HEADER_SIZE 16
     if (is_header)    { 
        //Write image data to buffer if not full
-        if (i < MQTT_MAX_PACKET_SIZE){
+        if (i < MQTT_MAX_PACKET_SIZE-MQTT_HEADER_SIZE){
           buf[i++] = temp;
         }
         else        {
           //Write MQTT_MAX_PACKET_SIZE bytes image data
           myCAM.CS_HIGH();
-          //file.write(buf, 256);
           JSONencoder["cmd"] = "more";
           String s = String(i);
           for (int j = 0; j < i; ++j){
