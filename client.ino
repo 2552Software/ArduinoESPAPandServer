@@ -116,12 +116,16 @@ private:
 } camera;
 
 void State::setup(){
-  Log.notice(F("mounting FS and the works..."));
+  Log.notice(F("mounting file system"CR));
+  // Next lines have to be done ONLY ONCE!!!!!When SPIFFS is formatted ONCE you can comment these lines out!!
+  //Serial.println("Please wait 30 secs for SPIFFS to be formatted");
+  //SPIFFS.format();
+  
   if (SPIFFS.begin()) { // often used
     //clean FS, for testing
     //Serial.println("SPIFFS remove ...");
     //SPIFFS.remove(CONFIG_FILE);
-    Log.notice(F("mounted file system bytes: %X/%X\n"), SPIFFS.usedBytes(), SPIFFS.totalBytes());
+    Log.notice(F("mounted file system bytes: %X/%X"CR), SPIFFS.usedBytes(), SPIFFS.totalBytes());
     get();
   }
   else {
@@ -132,21 +136,21 @@ void State::setup(){
 
 void State::powerSleep(){ // sleep when its ok to save power
     if (sleepTimeS) {
-      Log.notice("power sleep for %d seconds", sleepTimeS);
+      Log.notice("power sleep for %d seconds"CR, sleepTimeS);
       ESP.deepSleep(sleepTimeS * 1000000);//ESP32 sleep 10s by default
-      Log.notice("sleep over");
+      Log.notice("sleep over"CR);
     }
 }
 
 void State::echo(){
   uint64_t chipid = ESP.getEfuseMac();
-  Log.notice(F("ESP32 Chip ID = %04X"),(uint16_t)(chipid>>32));//print High 2 bytes
-  Log.notice(F("%08X"),(uint32_t)chipid);//print High 2 bytes
-  Log.notice(F("ssid: %s pwd %s: %s other: %s, sleep time in seconds %d"), ssid, password, other, sleepTimeS);
+  Log.notice(F("ESP32 Chip ID = %04X"CR),(uint16_t)(chipid>>32));//print High 2 bytes
+  Log.notice(F("%08X"CR),(uint32_t)chipid);//print High 2 bytes
+  Log.notice(F("ssid: %s pwd %s: other: %s, sleep time in seconds %d"CR), ssid, password, other, sleepTimeS);
 }
 
 void State::setDefault(){
-  Log.notice(F("set default State"));
+  Log.notice(F("set default State"CR));
   safestr(ssid, SSID, sizeof(ssid));
   safestr(password, PWD, sizeof(password)); // future phases can sync pwds or such
   safestr(other, "", sizeof(other));
@@ -169,7 +173,7 @@ void State::set(){
       json["other"] = other;
       json["priority"] = priority;
       json["sleepTimeS"] = sleepTimeS;
-      Log.notice("config.json contents");
+      Log.notice("config.json contents"CR);
       echo();
       json.prettyPrintTo(Serial);
       json.printTo(configFile);
@@ -180,10 +184,10 @@ void State::get(){
   //read configuration from FS json
   if (SPIFFS.exists("/config.json")) {
     //file exists, reading and loading
-    Log.notice("reading config file");
+    Log.notice("reading config file"CR);
     File configFile = SPIFFS.open(CONFIG_FILE, "r");
     if (configFile) {
-      Log.notice("opened config file");
+      Log.notice("opened config file"CR);
       size_t size = configFile.size();
       // Allocate a buffer to store contents of the file.
       std::unique_ptr<char[]> buf(new char[size]);
@@ -192,7 +196,7 @@ void State::get(){
       JsonObject& json = jsonBuffer.parseObject(buf.get());
       json.printTo(Serial);
       if (json.success()) {
-        Log.notice("parsed json A OK");
+        Log.notice("parsed json A OK"CR);
         safestr(ssid, json["ssid"], sizeof(ssid));
         safestr(password, json["pwd"], sizeof(password));
         safestr(other, json["other"], sizeof(other));
@@ -201,15 +205,15 @@ void State::get(){
         echo();
       } 
       else {
-        Log.error("failed to load json config");
+        Log.error("failed to load json config"CR);
       }
     }
     else {
-      Log.error("internal error");
+      Log.error("internal error"CR);
     }
   }
   else {
-    Log.notice("no config file, set defaults");
+    Log.notice("no config file, set defaults"CR);
     state.setDefault();
   }
 
@@ -220,7 +224,7 @@ void State::get(){
 void Camera::capture(){
   int total_time = 0;
 
-  Log.trace(F("start capture"));
+  Log.trace(F("start capture"CR));
   myCAM.flush_fifo(); // added this
   myCAM.clear_fifo_flag();
   myCAM.start_capture();
@@ -229,7 +233,7 @@ void Camera::capture(){
   while (!myCAM.get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK));
   total_time = millis() - total_time;
 
-  Log.trace(F("capture total_time used (in miliseconds): %D"), total_time);
+  Log.trace(F("capture total_time used (in miliseconds): %D"CR), total_time);
  }
 
 // SPI must be setup
@@ -253,7 +257,7 @@ void Camera::setup(){
     myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
     temp = myCAM.read_reg(ARDUCHIP_TEST1);
     if(temp != 0x55){
-      Log.error(F("SPI interface Error!"));
+      Log.error(F("SPI interface Error!"CR));
       delay(2);
       continue;
     }
@@ -414,37 +418,38 @@ void Connections::sendToMQTT(const char*topic, JsonObject& JSONencoder){
   JSONencoder["ipMe"] = ipMe.toString();
   JSONencoder["IAM"] = "cam1";
   JSONencoder["mqtt"] =  ipServer;
-  Log.trace(F("ending message to MQTT, topic is %s ;"), topic);
+  Log.trace(F("ending message to MQTT, topic is %s ;"CR), topic);
   Log.trace(JSONmessageBuffer);
+  Log.trace(CR);
   connect(); // quick connect check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
   if (mqttClient.publish(topic, JSONmessageBuffer) != true) {
-    Log.error("sending message to mqtt");
+    Log.error("sending message to mqtt"CR);
   }
 }
 
 // timeout connection attempt
 uint8_t Connections::waitForResult(int connectTimeout) {
   if (connectTimeout == 0) {
-    Log.trace(F("Waiting for connection result without timeout"));
+    Log.trace(F("Waiting for connection result without timeout"CR));
     return WiFi.waitForConnectResult();
   } 
   else {
-    Log.trace(F("Waiting for connection result with time out of %d"), connectTimeout);
+    Log.trace(F("Waiting for connection result with time out of %d"CR), connectTimeout);
     unsigned long start = millis();
     uint8_t status;
     while (1) {
       status = WiFi.status();
       if (millis() > start + connectTimeout) {
-        Log.trace(F("Connection timed out"));
+        Log.trace(F("Connection timed out"CR));
         return WL_CONNECT_FAILED;
       }
       if (status == WL_CONNECTED || status == WL_CONNECT_FAILED) {
         if (status == WL_CONNECT_FAILED) {
-          Log.error(F("Connection failed"));
+          Log.error(F("Connection failed"CR));
         }
         return status;
       }
-      Log.trace(F("wait and try connection again until timeout occurs"));
+      Log.trace(F("wait and try connection again until timeout occurs"CR));
       delay(200);
     }
 
@@ -455,7 +460,7 @@ uint8_t Connections::waitForResult(int connectTimeout) {
 // allow for reconnect, can be called often it needs to be fast
 void Connections::connect(){
   while (WiFi.status() != WL_CONNECTED && !isSoftAP) { // add code to try different mqtt todo bugbug
-    Log.notice("Connect to WiFi..");
+    Log.notice("Connect to WiFi.."CR);
     //check if we have ssid and pass and force those, if not, try with last saved values
     if (state.password[0] != '\0'){
       WiFi.begin(state.ssid, state.password);
@@ -464,18 +469,18 @@ void Connections::connect(){
       WiFi.begin(state.ssid);
     }
     if (waitForResult(500) != WL_CONNECTED) {
-        Log.trace("No connections made. Be the access point");
+        Log.trace("No connections made. Be the access point"CR);
         WiFi.softAP(state.ssid, state.password);
-        Log.trace("AP IP address: %s", WiFi.softAPIP().toString());
+        Log.trace("AP IP address: %s"CR, WiFi.softAPIP().toString());
         isSoftAP = true;
     }
   }
   while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
-    Log.trace("Connecting to MQTT...");
+    Log.trace("Connecting to MQTT..."CR);
      if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
-      Log.notice("connected to %s", ipServer);
+      Log.notice("connected to %s"CR, ipServer);
      } else {
-      Log.error(F("failed with state %D will retry every 2 seconds server %s"), mqttClient.state(), ipServer);
+      Log.error(F("failed with state %D will retry every 2 seconds server %s"CR), mqttClient.state(), ipServer);
       delay(2000);
      }
   }
@@ -485,7 +490,7 @@ void setup(){
   Serial.begin(115200);
 
   Log.begin(logLevel, &Serial);
-  Log.notice(F("ArduCAM Start!"));
+  Log.notice(F("ArduCAM Start!"CR));
 
   Wire.begin();
   SPI.begin();
@@ -510,7 +515,6 @@ void loop(){
   state.powerSleep();
   camera.turnOn(); // do we need this? bugbug todo do we have to wait for start up here? 1 second? what?
 }
-
 
 
 
