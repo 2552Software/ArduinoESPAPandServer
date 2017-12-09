@@ -390,6 +390,7 @@ void Camera::captureAndSend(const char * path){
   while ( length-- )  {
     temp_last = temp;
     temp =  SPI.transfer(0x00);
+    Log.trace("tmp a[%d] = %x", i, temp);
     //Read JPEG data from FIFO until EOF, send send the image
     if ( (temp == 0xD9) && (temp_last == 0xFF) ){ //If find the end ,break while,
         buf[i++] = temp;  //save the last  0XD9     
@@ -447,9 +448,8 @@ void Connections::sendToMQTT(const char*topic, JsonObject& JSONencoder){
   JSONencoder["id"] = "getthis"; // bugbug todo make this a global etc
   JSONencoder["IAM"] = "cam1";
   JSONencoder["mqtt"] =  ipServer;
-  Log.trace(F("sending message to MQTT, topic is %s ;" CR), topic);
+  Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
   Log.trace(JSONmessageBuffer);
-  Log.trace(CR);
   connect(); // quick connect check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
   if (mqttClient.publish(topic, JSONmessageBuffer) != true) {
     Log.error("sending message to mqtt");
