@@ -4,8 +4,9 @@
  *  need to figure license and copy right etc yet
  */
  // tested cam
-#define OV2640_MINI_2MP
+#define OV2640_MINI_2MP 
 #define ARDUINOJSON_ENABLE_PROGMEM 0
+#define MQTT_MAX_PACKET_SIZE 6*1024
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
 #include <WiFi.h>
@@ -15,10 +16,10 @@
 #include <PubSubClient.h>
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #include <SPIFFS.h>
-#include <TimeLib.h>
+#include <TimeLib.h> //todo bugbug just use static count to name files and drop this, or get it to do dates nicely
 #include <esp_event.h>
 
-#include "memorysaver.h"
+#include "memorysaver.h" 
 
 #if !(defined ESP32 )
 #error Please select the some sort of ESP32 board in the Tools/Board
@@ -56,7 +57,7 @@ class Connections {
 public:
   Connections(){isSoftAP = false;}
   void setup();
-  void sendToMQTT(const char*topic, JsonObject& JSONencoder);
+  void sendToMQTT(const char*topic, JsonObject& root, bool isBinary=false);
   static const int MAX_PWD_LEN = 16;
   static const int MAX_SSID_LEN = 16;
   void makeAP(char *ssid, char*pwd);
@@ -219,7 +220,7 @@ void State::get(){
     if (configFile) {
       Log.notice("opened config file");
       size_t size = configFile.size();
-      // Allocate a buffer to store contents of the file.
+      // Allocate a buffer to store contents of the file. crash if no memory
       std::unique_ptr<char[]> buf(new char[size]);
       configFile.readBytes(buf.get(), size);
       DynamicJsonBuffer jsonBuffer(JSON_OBJECT_SIZE(1) + Connections::MAX_PWD_LEN);
@@ -270,10 +271,9 @@ void Camera::capture(){
 void Camera::setup(){
   uint8_t vid, pid;
   uint8_t temp;
-  static int i = 0;
 
   // send many signs on help with debugging etc
-  StaticJsonBuffer<MQTT_MAX_PACKET_SIZE> JSONbuffer;
+  DynamicJsonBuffer JSONbuffer;
   JsonObject& JSONencoder = JSONbuffer.createObject();
   JSONencoder["cmd"] = "setupCamera";
 
@@ -292,6 +292,7 @@ void Camera::setup(){
       continue;
     }
     else {
+      Log.trace(F("SPI interface to camera found"));
       break;
     }
   } 
@@ -303,6 +304,7 @@ void Camera::setup(){
   myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
   if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))){
     JSONencoder["error"] = "Can't find OV2640 module!";
+    Log.error(F("SPI interface Error! pid %x"), pid);
   }
   else {
     Log.trace(F("OV2640 detected."));
@@ -334,9 +336,9 @@ void Camera::setup(){
   //Change to JPEG capture mode and initialize the camera module
   myCAM.set_format(JPEG);
   myCAM.InitCAM();
-  
+  //bugbug todo allow mqtt based set of these, then a restart if needed, store in config file
 #if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
-    myCAM.OV2640_set_JPEG_size(OV2640_320x240);
+    myCAM.OV2640_set_JPEG_size(OV2640_1600x1200); //OV2640_320x240 OV2640_800x600 OV2640_640x480 OV2640_1024x768 OV2640_1600x1200
     JSONencoder["camType"] = "2640, 320x240";
 #elif defined (OV5640_MINI_5MP_PLUS) || defined (OV5640_CAM)
     myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);   //VSYNC is active HIGH
@@ -355,19 +357,27 @@ void Camera::setup(){
 
 //send via mqtt, mqtt server will turn to B&W and see if there are changes ie motion, of so it will send it on
 void Camera::captureAndSend(const char * path){
-  byte buf[MQTT_MAX_PACKET_SIZE];
+      // not sure about this one yet
+    #define MQTT_HEADER_SIZE 16
+
+  std::unique_ptr<byte[]> buf(new byte[MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE]);
+  if (buf == nullptr){
+     Log.error(F("mem 1 size %d"), MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
+     return;
+  }
   int i = 0;
   uint8_t temp = 0, temp_last = 0;
   uint32_t length = 0;
   bool is_header = false;
   
   capture();
-  
-  StaticJsonBuffer<300> JSONbuffer;
-  JsonObject& JSONencoder = JSONbuffer.createObject();
+  DynamicJsonBuffer jsonBuffer(MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
+  JsonObject& JSONencoder = jsonBuffer.createObject();
   JSONencoder["device"] = "ESP32";//give it a unique name
   JSONencoder["type"] = "camera";
-  
+
+  //OV2640_320x240 is 6149 currently at least, not too bad, 640x480 is 15365, still not too bad, 800x600 16389, OV2640_1024x768 is 32773, getting too large? will vary based on image
+  // 71685 for OV2640_1600x1200. Next see how each mode looks and how fast OV2640_1600x1200 can be sent. All data sizes around power of 2 with some padding. is this consistant?
   length = myCAM.read_fifo_length();
   
   // send MQTT start xfer message
@@ -390,12 +400,10 @@ void Camera::captureAndSend(const char * path){
   while ( length-- )  {
     temp_last = temp;
     temp =  SPI.transfer(0x00);
-    Log.trace("tmp a[%d] = %x", i, temp);
-    //Read JPEG data from FIFO until EOF, send send the image
+    //Read JPEG data from FIFO until EOF, send send the image.  Size likely to be smaller than buffer
     if ( (temp == 0xD9) && (temp_last == 0xFF) ){ //If find the end ,break while,
         buf[i++] = temp;  //save the last  0XD9     
        //Write the remain bytes in the buffer
-       // #define MQTT_MAX_PACKET_SIZE 128 so we are ok
        // todo get the save code from before, then use that to store CAMID (already there I think) and use that as part of xfer
         myCAM.CS_HIGH();
         // send buffer via mqtt here  
@@ -405,12 +413,10 @@ void Camera::captureAndSend(const char * path){
           s.setCharAt(j, buf[j]);
         }
         JSONencoder["buf"] = s;
-        connections.sendToMQTT("cmd", JSONencoder);
+        connections.sendToMQTT("cmd", JSONencoder, true);
         is_header = false;
         i = 0;
     }  
-    // not sure about this one yet
-    #define MQTT_HEADER_SIZE 16
     if (is_header)    { 
        //Write image data to buffer if not full
         if (i < MQTT_MAX_PACKET_SIZE-MQTT_HEADER_SIZE){
@@ -425,7 +431,7 @@ void Camera::captureAndSend(const char * path){
             s.setCharAt(j, buf[j]);
           }
           JSONencoder["buf"] = s;
-          connections.sendToMQTT("cmd", JSONencoder);
+          connections.sendToMQTT("cmd", JSONencoder, true);
   
           i = 0;
           buf[i++] = temp;
@@ -441,21 +447,23 @@ void Camera::captureAndSend(const char * path){
   } 
 }
 
-// send to mqtt
-void Connections::sendToMQTT(const char*topic, JsonObject& JSONencoder){
-  char JSONmessageBuffer[MQTT_MAX_PACKET_SIZE];
-  JSONencoder.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
-  JSONencoder["id"] = "getthis"; // bugbug todo make this a global etc
-  JSONencoder["IAM"] = "cam1";
-  JSONencoder["mqtt"] =  ipServer;
-  Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
-  Log.trace(JSONmessageBuffer);
+// send to mqtt, binary is only partily echoed
+void Connections::sendToMQTT(const char*topic, JsonObject& root, bool isBinary){
+  String output;
+  root.printTo(output);
+  if (isBinary){
+    // assume its large and not in need of echo, good info https://github.com/bblanchon/ArduinoJson/issues/235
+    Log.trace(F("sending large binary message to MQTT, topic is %s ;"), topic);
+  }
+  else {
+    Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
+    Log.trace(output.c_str());
+  }
   connect(); // quick connect check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
-  if (mqttClient.publish(topic, JSONmessageBuffer) != true) {
+  if (mqttClient.publish(topic, output.c_str()) != true) {
     Log.error("sending message to mqtt");
   }
 }
-
 
 // timeout connection attempt
 uint8_t Connections::waitForResult(int connectTimeout) {
