@@ -6,7 +6,7 @@
  // tested cam
 #define OV2640_MINI_2MP 
 #define ARDUINOJSON_ENABLE_PROGMEM 0
-#define MQTT_MAX_PACKET_SIZE 6*1024
+#define MQTT_MAX_PACKET_SIZE 1024
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
 #include <WiFi.h>
@@ -18,18 +18,17 @@
 #include <SPIFFS.h>
 #include <TimeLib.h> //todo bugbug just use static count to name files and drop this, or get it to do dates nicely
 #include <esp_event.h>
-
 #include "memorysaver.h" 
 
 #if !(defined ESP32 )
 #error Please select the some sort of ESP32 board in the Tools/Board
 #endif
 
-// ip types vary by api expecations bugbug todo get all these in a class home
-const char* ipServer = "192.168.88.100";// for now assume this, 100-200 are servers
-WiFiClient espClient;
-PubSubClient mqttClient(ipServer, 1883, espClient);
-char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
+
+const int MAX_PWD_LEN = 16;//todo make lower case
+const int MAX_SSID_LEN = 16;
+const char* SSID = "SAM-Home"; // create a SSID of WIFI1 outside of this env. to use 3rd party wifi like mobile access point or such. If no such SSID is created we will create one here
+const char* PWD = NULL; // never set here, set in the run time that stores config, todo bugbug make api to change
 
 //Version 2,set GPIO0 as the slave select :
 
@@ -49,24 +48,193 @@ void safestr(char *s1, const char *s2, int len) {
   }
 }
 
+// saved configuration etc, can be set via mqtt, can be unique for each device. Must be set each time a new OS is installed as data is stored on the device for things like pwd so pwd is never 
+// stored in open source
+class State {
+public:
+  State() {   setDefault(); }
+  void setup();
+  void powerSleep(); // sleep when its ok to save power
+  char ssid[MAX_SSID_LEN]; 
+  char password[MAX_PWD_LEN];
+  char other[16];
+  uint32_t priority;
+  int sleepTimeS;
+  void set();
+  void get();
+  void setDefault();
+  void echo();
+  private:
+  const char *defaultConfig = "/config.json";
+} state;
 
-const char* SSID = "SAM-Home"; // create a SSID of WIFI1 outside of this env. to use 3rd party wifi like mobile access point or such. If no such SSID is created we will create one here
-const char* PWD = NULL; // never set here, set in the run time that stores config, todo bugbug make api to change
 
 class Connections {
 public:
   Connections(){isSoftAP = false;}
   void setup();
-  void sendToMQTT(const char*topic, JsonObject& root, bool isBinary=false);
-  static const int MAX_PWD_LEN = 16;
-  static const int MAX_SSID_LEN = 16;
+  void loop();
+  bool sendToMQTT(const char*topic, JsonObject& root);
+  bool sendToMQTT(const char*topic, const uint8_t * payload, unsigned int plength);
+  static const int MQTTport = 1883;
+  // ip types vary by api expecations bugbug todo get all these in a class home
+  const char* ipServer = "192.168.88.100";// for now assume this, 100-200 are servers
+  WiFiClient wifiClient;
+  PubSubClient mqttClient;
+  //char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
   void makeAP(char *ssid, char*pwd);
+  void reconnect();
 private:
   static void WiFiEvent(WiFiEvent_t event);
   bool isSoftAP;
   void connect(); // call inside sends so we can optimzie as needed
   uint8_t waitForResult(int connectTimeout);
+  static void  input(char* topic, byte* payload, unsigned int length);
 } connections;
+
+void Connections::loop(){
+  if (!wifiClient.connected()) {
+    reconnect();
+  }
+  mqttClient.loop();
+
+}
+// send to mqtt, binary is only partily echoed
+bool Connections::sendToMQTT(const char*topic, JsonObject& root){
+  String output;
+  root.printTo(output);
+  Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
+  Log.trace(output.c_str());
+  reconnect(); // do as much as we can to work with bad networks
+  if (!mqttClient.publish(topic, output.c_str())) {
+    Log.error("sending message to mqtt");
+    return false;
+  }
+  Log.trace("sent message to mqtt");
+  return true;
+}
+boolean Connections::sendToMQTT(const char* topic, const uint8_t * payload, unsigned int length){
+  Log.trace(F("sending binary message to MQTT, topic is %s ;"), topic);
+  reconnect(); // do as much as we can to work with bad networks
+  if (!mqttClient.publish(topic, payload, length)) {
+    Log.error("sending binary message to mqtt");
+    return false;
+  }
+  Log.trace("sent binary message to mqtt");
+  return true;
+  
+}
+
+// timeout connection attempt
+uint8_t Connections::waitForResult(int connectTimeout) {
+  if (connectTimeout == 0) {
+    Log.trace(F("Waiting for connection result without timeout" CR));
+    return WiFi.waitForConnectResult();
+  } 
+  else {
+    Log.trace(F("Waiting for connection result with time out of %d" CR), connectTimeout);
+    unsigned long start = millis();
+    uint8_t status;
+    while (1) {
+      status = WiFi.status();
+      https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/include/wl_definitions.h
+      if (millis() > start + connectTimeout) {
+        Log.trace(F("Connection timed out"));
+        return WL_CONNECT_FAILED;
+      }
+      if (status == WL_CONNECTED){
+        Log.notice(F("hot dog! we connected"));
+        return WL_CONNECTED;
+      }
+      if (status == WL_CONNECT_FAILED) {
+        Log.error(F("Connection failed"));
+      }
+      Log.trace(F("."));
+      delay(200);
+    }
+
+    return status;
+  }
+}
+
+// allow for reconnect, can be called often it needs to be fast
+void Connections::connect(){
+  //https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/include/wl_definitions.h
+  if (!WiFi.isConnected()){
+    Log.trace(F("WiFi.status() != WL_CONNECTED"));
+    //check if we have ssid and pass and force those, if not, try with last saved values
+    if (state.password[0] != '\0'){
+     Log.notice("Connect to WiFi... %s %s", state.ssid, state.password);
+     WiFi.begin(state.ssid, state.password);
+    }
+    else {
+     Log.notice("Connect to WiFi... %s", state.ssid);
+     WiFi.begin(state.ssid);
+    }
+    waitForResult(10000);
+    if (!WiFi.isConnected()) {
+      Log.error(F("something went horribly wrong" CR));
+      return;
+    }
+    WiFi.setHostname("Station_Tester_02"); //bugbug todo make this unqiue and refelective and get from config
+    Log.notice("Connected, host name is %s", WiFi.getHostname()); //bugbug todo make this unqiue and refelective
+    Log.notice("RSSI: %d dBm", WiFi.RSSI());
+    Log.notice("BSSID: %d", *WiFi.BSSID());
+    Log.notice("LocalIP: %s", WiFi.localIP().toString().c_str());
+  }  
+  reconnect();
+  while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
+    Log.trace("Connecting to MQTT...");
+     if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
+      Log.notice("connected to %s (!)", ipServer);
+     } else {
+      //https://github.com/knolleary/pubsubclient/blob/master/src/PubSubClient.h
+      Log.error(F("failed with state %d will retry every 2 seconds server %s"), mqttClient.state(), ipServer);
+      delay(2000);
+     }
+  }
+}
+
+void Connections::reconnect() {
+  // Loop until we're reconnected
+  while (!mqttClient.connected()) {
+   Log.trace("Connecting to MQTT... %s", ipServer);
+    // Create a random client ID bugbug todo clean this up, use process id etc
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (mqttClient.connect(clientId.c_str())) {
+      Log.trace("connected");
+      // Once connected, publish an announcement...
+      mqttClient.publish("outTopic", "hello world");
+      // ... and resubscribe
+      mqttClient.subscribe("inTopic");
+    } else {
+      Log.notice("failed, rc=%d try again in 5 seconds", mqttClient.state());
+      delay(5000);
+    }
+  }
+
+}
+void  Connections::input(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+  /* example Switch on the LED if an 1 was received as first character
+   *  we would set a config item like turn camera on etc maybe reboot, maybe set in the .config file
+  if ((char)payload[0] == '1') {
+    digitalWrite(BUILTIN_LED, LOW);   // Turn the LED on (Note that LOW is the voltage level
+    // but actually the LED is on; this is because
+    // it is acive low on the ESP-01)
+  } else {
+    digitalWrite(BUILTIN_LED, HIGH);  // Turn the LED off by making the voltage HIGH
+  }
+  */
+}
 
 //bugbug if an AP is needed just use one $15 esp32, mixing AP with client kind of works but its not desired as one radio is shared and it leads to problems
 void Connections::makeAP(char *ssid, char*pwd){
@@ -83,33 +251,17 @@ void Connections::makeAP(char *ssid, char*pwd){
 }
 
 void Connections::setup(){
-     Log.trace(F("Connections::setup"));
-
-    WiFi.onEvent(WiFiEvent);
-    WiFi.mode(WIFI_STA); // any ESP can be an AP if main AP is not found.
-    WiFi.setAutoReconnect(true); // let system auto reconnect for us
-    connect();
+  Log.trace(F("Connections::setup"));
+  //put a copy in here when ready blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
+  mqttClient.setServer(ipServer, MQTTport);
+  mqttClient.setCallback(input);
+  mqttClient.setClient(wifiClient);
+  WiFi.onEvent(WiFiEvent);
+  WiFi.mode(WIFI_STA); // any ESP can be an AP if main AP is not found.
+  WiFi.setAutoReconnect(true); // let system auto reconnect for us
+  connect();
   }
 
-// saved configuration etc, can be set via mqtt, can be unique for each device. Must be set each time a new OS is installed as data is stored on the device for things like pwd so pwd is never 
-// stored in open source
-class State {
-public:
-  State() {   setDefault(); }
-  void setup();
-  void powerSleep(); // sleep when its ok to save power
-  char ssid[Connections::MAX_SSID_LEN]; 
-  char password[Connections::MAX_PWD_LEN];
-  char other[16];
-  uint32_t priority;
-  int sleepTimeS;
-  void set();
-  void get();
-  void setDefault();
-  void echo();
-  private:
-  const char *defaultConfig = "/config.json";
-} state;
 
 void Connections::WiFiEvent(WiFiEvent_t event) {
   //https://github.com/espressif/arduino-esp32/blob/master/tools/sdk/include/esp32/esp_event.h
@@ -223,7 +375,7 @@ void State::get(){
       // Allocate a buffer to store contents of the file. crash if no memory
       std::unique_ptr<char[]> buf(new char[size]);
       configFile.readBytes(buf.get(), size);
-      DynamicJsonBuffer jsonBuffer(JSON_OBJECT_SIZE(1) + Connections::MAX_PWD_LEN);
+      DynamicJsonBuffer jsonBuffer(JSON_OBJECT_SIZE(1) + MAX_PWD_LEN);
       JsonObject& json = jsonBuffer.parseObject(buf.get());
       json.printTo(Serial);
       if (json.success()) {
@@ -357,21 +509,14 @@ void Camera::setup(){
 
 //send via mqtt, mqtt server will turn to B&W and see if there are changes ie motion, of so it will send it on
 void Camera::captureAndSend(const char * path){
-      // not sure about this one yet
-    #define MQTT_HEADER_SIZE 16
+  // not sure about this one yet
+  #define MQTT_HEADER_SIZE 16
 
-  std::unique_ptr<byte[]> buf(new byte[MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE]);
-  if (buf == nullptr){
-     Log.error(F("mem 1 size %d"), MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
-     return;
-  }
-  int i = 0;
-  uint8_t temp = 0, temp_last = 0;
   uint32_t length = 0;
   bool is_header = false;
   
   capture();
-  DynamicJsonBuffer jsonBuffer(MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
+  DynamicJsonBuffer jsonBuffer;
   JsonObject& JSONencoder = jsonBuffer.createObject();
   JSONencoder["device"] = "ESP32";//give it a unique name
   JSONencoder["type"] = "camera";
@@ -392,9 +537,16 @@ void Camera::captureAndSend(const char * path){
     JSONencoder["error"] = "Size is 0";
   }
   
-  connections.sendToMQTT("cmd", JSONencoder);
-  
-  i = 0;
+  connections.sendToMQTT("cmd", JSONencoder); // just let folks no a new file is being sent
+
+  // will send file in parts
+  std::unique_ptr<uint8_t[]> buf(new uint8_t[MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE]);
+  if (buf == nullptr){
+     Log.error(F("mem 1 size %d"), MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
+     return;
+  }
+  uint8_t temp = 0, temp_last = 0;
+  unsigned int i = 0;
   myCAM.CS_LOW();
   myCAM.set_fifo_burst();
   while ( length-- )  {
@@ -407,13 +559,7 @@ void Camera::captureAndSend(const char * path){
        // todo get the save code from before, then use that to store CAMID (already there I think) and use that as part of xfer
         myCAM.CS_HIGH();
         // send buffer via mqtt here  
-        JSONencoder["cmd"] = "final";
-        String s = String(i);
-        for (int j = 0; j < i; ++j){
-          s.setCharAt(j, buf[j]);
-        }
-        JSONencoder["buf"] = s;
-        connections.sendToMQTT("cmd", JSONencoder, true);
+        connections.sendToMQTT("dataend", buf.get(), i+1); // will need to namic topic like "Cam1" kind of things once working bugbug
         is_header = false;
         i = 0;
     }  
@@ -425,15 +571,8 @@ void Camera::captureAndSend(const char * path){
         else        {
           //Write MQTT_MAX_PACKET_SIZE bytes image data
           myCAM.CS_HIGH();
-          JSONencoder["cmd"] = "more";
-          String s = String(i);
-          for (int j = 0; j < i; ++j){
-            s.setCharAt(j, buf[j]);
-          }
-          JSONencoder["buf"] = s;
-          connections.sendToMQTT("cmd", JSONencoder, true);
-  
-          i = 0;
+          connections.sendToMQTT("datamore", buf.get(), i+1);
+          i = 0; // back to start of buffer
           buf[i++] = temp;
           myCAM.CS_LOW();
           myCAM.set_fifo_burst();
@@ -447,92 +586,6 @@ void Camera::captureAndSend(const char * path){
   } 
 }
 
-// send to mqtt, binary is only partily echoed
-void Connections::sendToMQTT(const char*topic, JsonObject& root, bool isBinary){
-  String output;
-  root.printTo(output);
-  if (isBinary){
-    // assume its large and not in need of echo, good info https://github.com/bblanchon/ArduinoJson/issues/235
-    Log.trace(F("sending large binary message to MQTT, topic is %s ;"), topic);
-  }
-  else {
-    Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
-    Log.trace(output.c_str());
-  }
-  connect(); // quick connect check, connect, re-connect or do nothing to assure we are doing our best to stay in touch
-  if (mqttClient.publish(topic, output.c_str()) != true) {
-    Log.error("sending message to mqtt");
-  }
-}
-
-// timeout connection attempt
-uint8_t Connections::waitForResult(int connectTimeout) {
-  if (connectTimeout == 0) {
-    Log.trace(F("Waiting for connection result without timeout" CR));
-    return WiFi.waitForConnectResult();
-  } 
-  else {
-    Log.trace(F("Waiting for connection result with time out of %d" CR), connectTimeout);
-    unsigned long start = millis();
-    uint8_t status;
-    while (1) {
-      status = WiFi.status();
-      https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/include/wl_definitions.h
-      if (millis() > start + connectTimeout) {
-        Log.trace(F("Connection timed out"));
-        return WL_CONNECT_FAILED;
-      }
-      if (status == WL_CONNECTED){
-        Log.notice(F("hot dog! we connected"));
-        return WL_CONNECTED;
-      }
-      if (status == WL_CONNECT_FAILED) {
-        Log.error(F("Connection failed"));
-      }
-      Log.trace(F("."));
-      delay(200);
-    }
-
-    return status;
-  }
-}
-
-// allow for reconnect, can be called often it needs to be fast
-void Connections::connect(){
-  //https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/include/wl_definitions.h
-  if (!WiFi.isConnected()){
-    Log.trace(F("WiFi.status() != WL_CONNECTED"));
-    //check if we have ssid and pass and force those, if not, try with last saved values
-    if (state.password[0] != '\0'){
-     Log.notice("Connect to WiFi... %s %s", state.ssid, state.password);
-     WiFi.begin(state.ssid, state.password);
-    }
-    else {
-     Log.notice("Connect to WiFi... %s", state.ssid);
-     WiFi.begin(state.ssid);
-    }
-    waitForResult(10000);
-    if (!WiFi.isConnected()) {
-      Log.error(F("something went horribly wrong" CR));
-      return;
-    }
-    WiFi.setHostname("Station_Tester_02"); //bugbug todo make this unqiue and refelective and get from config
-    Log.notice("Connected, host name is %s", WiFi.getHostname()); //bugbug todo make this unqiue and refelective
-    Log.notice("RSSI: %d dBm", WiFi.RSSI());
-    Log.notice("BSSID: %d", *WiFi.BSSID());
-    Log.notice("LocalIP: %s", WiFi.localIP().toString().c_str());
-  }  
-  while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
-    Log.trace("Connecting to MQTT...");
-     if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
-      Log.notice("connected to %s (!)", ipServer);
-     } else {
-      //https://github.com/knolleary/pubsubclient/blob/master/src/PubSubClient.h
-      Log.error(F("failed with state %d will retry every 2 seconds server %s"), mqttClient.state(), ipServer);
-      delay(2000);
-     }
-  }
-}
 
 //todo bugbug move to a logging class and put a better time date stamp
 void printTimestamp(Print* _logOutput) {
@@ -569,6 +622,8 @@ void setup(){
 }
 
 void loop(){
+  connections.loop();
+
   char name[17];
   snprintf(name, 16, "%lu.jpg", now()); // unique number that means a ton
   camera.captureAndSend(name);
