@@ -83,7 +83,7 @@ public:
   PubSubClient mqttClient;
   //char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
   void makeAP(char *ssid, char*pwd);
-  void reconnect();
+  void connectMQTT();
 private:
   static void WiFiEvent(WiFiEvent_t event);
   bool isSoftAP;
@@ -94,7 +94,7 @@ private:
 
 void Connections::loop(){
   if (!wifiClient.connected()) {
-    reconnect();
+    connect();
   }
   mqttClient.loop();
 
@@ -105,7 +105,7 @@ bool Connections::sendToMQTT(const char*topic, JsonObject& root){
   root.printTo(output);
   Log.trace(F("sending message to MQTT, topic is %s ;"), topic);
   Log.trace(output.c_str());
-  reconnect(); // do as much as we can to work with bad networks
+  connect(); // do as much as we can to work with bad networks
   if (!mqttClient.publish(topic, output.c_str())) {
     Log.error("sending message to mqtt");
     return false;
@@ -114,13 +114,13 @@ bool Connections::sendToMQTT(const char*topic, JsonObject& root){
   return true;
 }
 boolean Connections::sendToMQTT(const char* topic, const uint8_t * payload, unsigned int length){
-  Log.trace(F("sending binary message to MQTT, topic is %s ;"), topic);
-  reconnect(); // do as much as we can to work with bad networks
+  Log.trace(F("sending binary message to MQTT, topic is %s size is %d"), topic, length);
+  connect(); // do as much as we can to work with bad networks
   if (!mqttClient.publish(topic, payload, length)) {
     Log.error("sending binary message to mqtt");
     return false;
   }
-  Log.trace("sent binary message to mqtt");
+  Log.trace("sent binary message to mqtt just fine");
   return true;
   
 }
@@ -173,29 +173,15 @@ void Connections::connect(){
     }
     waitForResult(10000);
     if (!WiFi.isConnected()) {
-      Log.error(F("something went horribly wrong" CR));
+      Log.error(F("something went horribly wrong"));
       return;
     }
-    WiFi.setHostname("Station_Tester_02"); //bugbug todo make this unqiue and refelective and get from config
-    Log.notice("Connected, host name is %s", WiFi.getHostname()); //bugbug todo make this unqiue and refelective
-    Log.notice("RSSI: %d dBm", WiFi.RSSI());
-    Log.notice("BSSID: %d", *WiFi.BSSID());
-    Log.notice("LocalIP: %s", WiFi.localIP().toString().c_str());
   }  
-  reconnect();
-  while (!mqttClient.connected()) { // add code to try different mqtt todo bugbug
-    Log.trace("Connecting to MQTT...");
-     if (mqttClient.connect(ipServer)) { //todo bugbug add user/pwd, store pwd local like others
-      Log.notice("connected to %s (!)", ipServer);
-     } else {
-      //https://github.com/knolleary/pubsubclient/blob/master/src/PubSubClient.h
-      Log.error(F("failed with state %d will retry every 2 seconds server %s"), mqttClient.state(), ipServer);
-      delay(2000);
-     }
-  }
+  connectMQTT();
 }
 
-void Connections::reconnect() {
+// reconnect to mqtt
+void Connections::connectMQTT() {
   // Loop until we're reconnected
   while (!mqttClient.connected()) {
    Log.trace("Connecting to MQTT... %s", ipServer);
@@ -236,7 +222,7 @@ void  Connections::input(char* topic, byte* payload, unsigned int length) {
   */
 }
 
-//bugbug if an AP is needed just use one $15 esp32, mixing AP with client kind of works but its not desired as one radio is shared and it leads to problems
+//bugbug if an AP is needed just use one $10 esp32, mixing AP with client kind of works but its not desired as one radio is shared and it leads to problems
 void Connections::makeAP(char *ssid, char*pwd){
     Log.trace("makeAP %s %s", ssid, pwd);
     if (pwd && *pwd) {
@@ -251,7 +237,7 @@ void Connections::makeAP(char *ssid, char*pwd){
 }
 
 void Connections::setup(){
-  Log.trace(F("Connections::setup"));
+  Log.trace(F("Connections::setup, server %s, port %d"), ipServer, MQTTport);
   //put a copy in here when ready blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
   mqttClient.setServer(ipServer, MQTTport);
   mqttClient.setCallback(input);
@@ -259,13 +245,29 @@ void Connections::setup(){
   WiFi.onEvent(WiFiEvent);
   WiFi.mode(WIFI_STA); // any ESP can be an AP if main AP is not found.
   WiFi.setAutoReconnect(true); // let system auto reconnect for us
-  connect();
-  }
+}
 
 
 void Connections::WiFiEvent(WiFiEvent_t event) {
   //https://github.com/espressif/arduino-esp32/blob/master/tools/sdk/include/esp32/esp_event.h
-  Log.notice("[WiFi-event] event: %d" CR, event);
+  switch (event){
+  case SYSTEM_EVENT_STA_START:
+    Log.notice("[WiFi-event] SYSTEM_EVENT_STA_START");
+    break;
+  case SYSTEM_EVENT_STA_CONNECTED:
+    Log.notice("[WiFi-event] SYSTEM_EVENT_STA_CONNECTED");
+    break;
+  case SYSTEM_EVENT_STA_GOT_IP:
+    Log.notice("[WiFi-event] SYSTEM_EVENT_STA_GOT_IP");
+    WiFi.setHostname("Station_Tester_02"); //bugbug todo make this unqiue and refelective and get from config
+    Log.notice("Connected, host name is %s", WiFi.getHostname()); //bugbug todo make this unqiue and refelective
+    Log.notice("RSSI: %d dBm", WiFi.RSSI());
+    Log.notice("BSSID: %d", *WiFi.BSSID());
+    Log.notice("LocalIP: %s", WiFi.localIP().toString().c_str());
+    break;
+  default:
+    Log.notice("[WiFi-event] event: %d", event);
+  }
 }
 
 // breaks build when put in class as private, not sure but moving on...
@@ -295,6 +297,8 @@ private:
   static const uint8_t D10 = 4;
   const int CAM_POWER_ON = D10;
   void capture();
+  bool findCamera();
+  void initCam();
 } camera;
 
 void State::setup(){
@@ -417,18 +421,73 @@ void Camera::capture(){
   total_time = millis() - total_time;
 
   Log.trace(F("capture total_time used (in miliseconds): %D"), total_time);
- }
+}
+ 
+bool  Camera::findCamera(){
+  uint8_t vid, pid;
 
+#if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
+  //Check if the camera module type is OV2640
+  myCAM.wrSensorReg8_8(0xff, 0x01);
+  myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
+  myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
+  if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))){
+    Log.trace(F("OV2640 not detected"));
+  }
+  else {
+    Log.notice(F("OV2640 detected"));
+    return true;
+  }
+#elif defined (OV5640_MINI_5MP_PLUS) || defined (OV5640_CAM)
+  //Check if the camera module type is OV5640
+  myCAM.wrSensorReg16_8(0xff, 0x01);
+  myCAM.rdSensorReg16_8(OV5640_CHIPID_HIGH, &vid);
+  myCAM.rdSensorReg16_8(OV5640_CHIPID_LOW, &pid);
+  if((vid != 0x56) || (pid != 0x40)){
+     Log.trace(F("OV5640 not detected"));
+  }
+  else {
+    Log.notice(F("OV5640 detected"));
+    return true;
+  }
+#elif defined (OV5642_MINI_5MP_PLUS) || defined (OV5642_MINI_5MP) || (defined (OV5642_CAM))
+ //Check if the camera module type is OV5642
+  myCAM.wrSensorReg16_8(0xff, 0x01);
+  myCAM.rdSensorReg16_8(OV5642_CHIPID_HIGH, &vid);
+  myCAM.rdSensorReg16_8(OV5642_CHIPID_LOW, &pid);
+   if((vid != 0x56) || (pid != 0x42)){
+     Log.trace(F("OV5642 not detected"));
+   }
+   else {
+    Log.notice(F("OV5642 detected"));
+    return true;
+   }
+#endif
+  Log.notice(F("no cam detected"));
+  return false;// no cam
+}
+void Camera::initCam(){
+  Log.trace(F("init camera"));
+  //Change to JPEG capture mode and initialize the camera module
+  myCAM.set_format(JPEG);
+  myCAM.InitCAM();
+  //bugbug todo allow mqtt based set of these, then a restart if needed, store in config file
+#if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
+    myCAM.OV2640_set_JPEG_size(OV2640_800x600); //OV2640_320x240 OV2640_800x600 OV2640_640x480 OV2640_1024x768 OV2640_1600x1200
+    Log.notice(F("init OV2640_800x600"));
+#elif defined (OV5640_MINI_5MP_PLUS) || defined (OV5640_CAM)
+    myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);   //VSYNC is active HIGH
+    myCAM.OV5640_set_JPEG_size(OV5640_320x240);
+    Log.notice(F("init OV5640_320x240"));
+#elif defined (OV5642_MINI_5MP_PLUS) || defined (OV5642_MINI_5MP) ||(defined (OV5642_CAM))
+    myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);   //VSYNC is active HIGH
+    myCAM.OV5642_set_JPEG_size(OV5642_320x240);  
+    Log.notice(F("init OV5642_320x240"));
+#endif
+
+}
 // SPI must be setup
 void Camera::setup(){
-  uint8_t vid, pid;
-  uint8_t temp;
-
-  // send many signs on help with debugging etc
-  DynamicJsonBuffer JSONbuffer;
-  JsonObject& JSONencoder = JSONbuffer.createObject();
-  JSONencoder["cmd"] = "setupCamera";
-
   //set the CS as an output:
   pinMode(CS,OUTPUT);
   pinMode(CAM_POWER_ON , OUTPUT);
@@ -437,8 +496,7 @@ void Camera::setup(){
   while(1){
     //Check if the ArduCAM SPI bus is OK
     myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
-    temp = myCAM.read_reg(ARDUCHIP_TEST1);
-    if(temp != 0x55){
+    if(myCAM.read_reg(ARDUCHIP_TEST1) != 0x55){
       Log.error(F("SPI interface Error!"));
       delay(2);
       continue;
@@ -448,63 +506,17 @@ void Camera::setup(){
       break;
     }
   } 
+  // need to check in a loop at least for a bit
+  while(1){
+    Log.trace(F("try to find camera"));
+    if (findCamera()) {
+      break;
+    }
+    delay(1000);
+  }
 
-#if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
-  //Check if the camera module type is OV2640
-  myCAM.wrSensorReg8_8(0xff, 0x01);
-  myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
-  myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
-  if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))){
-    JSONencoder["error"] = "Can't find OV2640 module!";
-    Log.error(F("SPI interface Error! pid %x"), pid);
-  }
-  else {
-    Log.trace(F("OV2640 detected."));
-  }
-#elif defined (OV5640_MINI_5MP_PLUS) || defined (OV5640_CAM)
-  //Check if the camera module type is OV5640
-  myCAM.wrSensorReg16_8(0xff, 0x01);
-  myCAM.rdSensorReg16_8(OV5640_CHIPID_HIGH, &vid);
-  myCAM.rdSensorReg16_8(OV5640_CHIPID_LOW, &pid);
-  if((vid != 0x56) || (pid != 0x40)){
-    JSONencoder["error"] = "Can't find OV5640 module!";
-  }
-  else {
-    Log.notice(F("OV5640 detected."));
-  }
-#elif defined (OV5642_MINI_5MP_PLUS) || defined (OV5642_MINI_5MP) || (defined (OV5642_CAM))
- //Check if the camera module type is OV5642
-  myCAM.wrSensorReg16_8(0xff, 0x01);
-  myCAM.rdSensorReg16_8(OV5642_CHIPID_HIGH, &vid);
-  myCAM.rdSensorReg16_8(OV5642_CHIPID_LOW, &pid);
-   if((vid != 0x56) || (pid != 0x42)){
-       JSONencoder["error"] = "Can't find OV5642 module!";
-   }
-   else {
-    Log.notice(F("OV5642 detected."));
-   }
-#endif
- 
-  //Change to JPEG capture mode and initialize the camera module
-  myCAM.set_format(JPEG);
-  myCAM.InitCAM();
-  //bugbug todo allow mqtt based set of these, then a restart if needed, store in config file
-#if defined (OV2640_MINI_2MP) || defined (OV2640_CAM)
-    myCAM.OV2640_set_JPEG_size(OV2640_1600x1200); //OV2640_320x240 OV2640_800x600 OV2640_640x480 OV2640_1024x768 OV2640_1600x1200
-    JSONencoder["camType"] = "2640, 320x240";
-#elif defined (OV5640_MINI_5MP_PLUS) || defined (OV5640_CAM)
-    myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);   //VSYNC is active HIGH
-    myCAM.OV5640_set_JPEG_size(OV5640_320x240);
-    JSONencoder["camType"];
-#elif defined (OV5642_MINI_5MP_PLUS) || defined (OV5642_MINI_5MP) ||(defined (OV5642_CAM))
-    myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);   //VSYNC is active HIGH
-    myCAM.OV5642_set_JPEG_size(OV5642_320x240);  
-    JSONencoder["camType"] = "5640, 320x240";
-#endif
-
-  connections.sendToMQTT("msg", JSONencoder);
-  //delay(1000); set wifi after this call, is this enough time?
-
+  initCam();
+  delay(1000); // let things setup
 }
 
 //send via mqtt, mqtt server will turn to B&W and see if there are changes ie motion, of so it will send it on
@@ -516,28 +528,19 @@ void Camera::captureAndSend(const char * path){
   bool is_header = false;
   
   capture();
-  DynamicJsonBuffer jsonBuffer;
-  JsonObject& JSONencoder = jsonBuffer.createObject();
-  JSONencoder["device"] = "ESP32";//give it a unique name
-  JSONencoder["type"] = "camera";
 
   //OV2640_320x240 is 6149 currently at least, not too bad, 640x480 is 15365, still not too bad, 800x600 16389, OV2640_1024x768 is 32773, getting too large? will vary based on image
   // 71685 for OV2640_1600x1200. Next see how each mode looks and how fast OV2640_1600x1200 can be sent. All data sizes around power of 2 with some padding. is this consistant?
   length = myCAM.read_fifo_length();
   
-  // send MQTT start xfer message
-  JSONencoder["cmd"] = "newjpg";
-  JSONencoder["path"] = path;
-  JSONencoder["len"] = length;
-  
-  if (length >= MAX_FIFO_SIZE) {//8M
-    JSONencoder["error"] = "Over size";
+  if (length >= MAX_FIFO_SIZE) {
+     Log.error(F("len %d, MAX_FIFO_SIZE is %d, ignore"), length, MAX_FIFO_SIZE);
+     return;
   }
   if (length == 0 )   {
-    JSONencoder["error"] = "Size is 0";
+     Log.error(F("len is 0 ignore"));
+     return;
   }
-  
-  connections.sendToMQTT("cmd", JSONencoder); // just let folks no a new file is being sent
 
   // will send file in parts
   std::unique_ptr<uint8_t[]> buf(new uint8_t[MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE]);
@@ -545,8 +548,19 @@ void Camera::captureAndSend(const char * path){
      Log.error(F("mem 1 size %d"), MQTT_MAX_PACKET_SIZE+MQTT_HEADER_SIZE);
      return;
   }
+  // let reader know we are coming so they can start saving data
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& JSONencoder = jsonBuffer.createObject();
+  JSONencoder["device"] = "ESP32";//give it a unique name bugbug todo
+  JSONencoder["type"] = "camera";
+  JSONencoder["cmd"] = "startjpg";
+  JSONencoder["path"] = path; // also name of topic with data
+  connections.sendToMQTT("dataready", JSONencoder);
+
+  // goto this next https://github.com/Links2004/arduinoWebSockets
   uint8_t temp = 0, temp_last = 0;
-  unsigned int i = 0;
+  unsigned int i = 0; // current index
+  unsigned int total = 0; // total bytes sent
   myCAM.CS_LOW();
   myCAM.set_fifo_burst();
   while ( length-- )  {
@@ -559,7 +573,18 @@ void Camera::captureAndSend(const char * path){
        // todo get the save code from before, then use that to store CAMID (already there I think) and use that as part of xfer
         myCAM.CS_HIGH();
         // send buffer via mqtt here  
-        connections.sendToMQTT("dataend", buf.get(), i+1); // will need to namic topic like "Cam1" kind of things once working bugbug
+        total += i+1;
+        connections.sendToMQTT(path, buf.get(), i+1); // will need to namic topic like "Cam1" kind of things once working bugbug
+        // now send notice
+        // send MQTT start xfer message
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject& JSONencoder = jsonBuffer.createObject();
+        JSONencoder["device"] = "ESP32";//give it a unique name bugbug todo
+        JSONencoder["type"] = "camera";
+        JSONencoder["cmd"] = "newjpg";
+        JSONencoder["path"] = path; // also name of topic with data
+        JSONencoder["len"] = total; // server can compare len with actual data lenght to make sure data was not lost
+        connections.sendToMQTT("datafinal", JSONencoder);
         is_header = false;
         i = 0;
     }  
@@ -571,7 +596,8 @@ void Camera::captureAndSend(const char * path){
         else        {
           //Write MQTT_MAX_PACKET_SIZE bytes image data
           myCAM.CS_HIGH();
-          connections.sendToMQTT("datamore", buf.get(), i+1);
+          total += i+1;
+          connections.sendToMQTT(path, buf.get(), i+1);
           i = 0; // back to start of buffer
           buf[i++] = temp;
           myCAM.CS_LOW();
@@ -610,22 +636,22 @@ void setup(){
   SPI.begin();
 
   state.setup();
+  connections.setup();
   camera.setup();
 
-  // put all code we can below camera setup to give it time to setup
+  // put all other code we can below camera setup to give it time to setup
   
   // stagger the starts to make sure the highest priority is most likely to become AP etc
   if (state.priority != 1){
     delay(1000*state.priority);
   }
-  connections.setup();
 }
 
 void loop(){
   connections.loop();
 
   char name[17];
-  snprintf(name, 16, "%lu.jpg", now()); // unique number that means a ton
+  snprintf(name, 16, "CAM1%lu.jpg", now()); // just use incrementor and unique name/type bugbug todo
   camera.captureAndSend(name);
 
   // figure out sleep next bugbug to do
