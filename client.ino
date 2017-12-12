@@ -75,6 +75,7 @@ public:
   void setup();
   void loop();
   bool sendToMQTT(const char*topic, JsonObject& root);
+  bool sendToMQTT(const char*topic, const char*msg);
   bool sendToMQTT(const char*topic, const uint8_t * payload, unsigned int plength);
   static const int MQTTport = 1883;
   // ip types vary by api expecations bugbug todo get all these in a class home
@@ -84,6 +85,7 @@ public:
   //char blynk_token[33] = "YOUR_BLYNK_TOKEN";//todo bugbug
   void makeAP(char *ssid, char*pwd);
   void connectMQTT();
+  void trace(const char*msg);
 private:
   static void WiFiEvent(WiFiEvent_t event);
   bool isSoftAP;
@@ -92,6 +94,10 @@ private:
   static void  input(char* topic, byte* payload, unsigned int length);
 } connections;
 
+// send to serial and mqtt if mqtt connected, msg must be null terminated string
+void Connections::trace(const char*msg){
+  sendToMQTT("trace", msg);
+}
 void Connections::loop(){
   if (!wifiClient.connected()) {
     connect();
@@ -99,6 +105,15 @@ void Connections::loop(){
   mqttClient.loop();
 
 }
+// payload must be null terminated
+bool Connections::sendToMQTT(const char*topic, const char*payload){
+  connect(); // do as much as we can to work with bad networks
+  if (!mqttClient.publish(topic, payload)) {
+    Log.error("sending binary message to mqtt %s", payload);
+    return false;
+  }
+ }
+
 // send to mqtt, binary is only partily echoed
 bool Connections::sendToMQTT(const char*topic, JsonObject& root){
   String output;
@@ -203,13 +218,7 @@ void Connections::connectMQTT() {
 
 }
 void  Connections::input(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
+  Log.trace("Message arrived, topic %s, len %d", topic, length);
   /* example Switch on the LED if an 1 was received as first character
    *  we would set a config item like turn camera on etc maybe reboot, maybe set in the .config file
   if ((char)payload[0] == '1') {
@@ -266,7 +275,10 @@ void Connections::WiFiEvent(WiFiEvent_t event) {
     Log.notice("LocalIP: %s", WiFi.localIP().toString().c_str());
     break;
   default:
-    Log.notice("[WiFi-event] event: %d", event);
+    char text[32];
+    snprintf(text, 32, "[WiFi-event] event: %d", event); // just use incrementor and unique name/type bugbug todo
+    Log.notice(text);
+    connections.trace(text); // not sure but maybe something is wrong
   }
 }
 
@@ -621,7 +633,6 @@ void printTimestamp(Print* _logOutput) {
 }
 
 void printNewline(Print* _logOutput) {
-  // todo echo to mqtt if set up
   _logOutput->print('\n');
 }
 void setup(){
@@ -638,6 +649,10 @@ void setup(){
   state.setup();
   connections.setup();
   camera.setup();
+
+  char text[32];
+  snprintf(text, 32, "device %s setup", "find this"); 
+  connections.trace(text); // not sure but maybe something is wrong
 
   // put all other code we can below camera setup to give it time to setup
   
